@@ -3,13 +3,11 @@ from pathlib import Path
 import re
 
 import pandas as pd
-import json
+from langchain.agents.middleware import ToolCallLimitMiddleware
 
-from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-# from openai import OpenAI
 from langchain.agents import create_agent
 
 from src.models.RespModels import FinalOutput
@@ -46,26 +44,19 @@ MACRO_CATEGORIES = [
     "其他",
 ]
 
-# client = OpenAI(
-#     api_key="llmops-zhenjiang-368c5e8878cf7b0f55b02401fab49aec",
-#     base_url="https://llmops.transwarp.io/vibecoding/v1"
-# )
 llm = ChatOpenAI(
     api_key="llmops-zhenjiang-368c5e8878cf7b0f55b02401fab49aec",
     base_url="https://llmops.transwarp.io/vibecoding/v1",
     model="openai/deepseek-v4-flash", # 对应你的 model 参数
     temperature=0.3
-)# .with_structured_output(FinalOutput)
+)
 
-# 2. 加载股票/行业基准数据 (MVP阶段全量放入Prompt)
+# 加载股票/行业基准数据 (MVP阶段全量放入Prompt)
 stock_df: pd.DataFrame = pd.read_csv(SOURCE / "stock_code.csv", encoding='utf-8-sig')[[
     'code', 'name', 'short_name'
     # 'category', 'exchange', 'company_id', 'company_name', 'state'
 ]]
-# industry: pd.DataFrame = pd.read_csv(SOURCE / "industry.csv", encoding='utf-8-sig')
-# distinct_industry = industry[['sw_l1_code', 'sw_l1_name']].drop_duplicates(subset=['sw_l1_code'])
-# # 行业数据
-# {distinct_industry.to_markdown(index=False)}
+
 """
 ## 2. 行业维度分析 (industry_relations)
 - 返回一个数组，如果新闻不涉及任何行业，返回空数组 []。
@@ -90,8 +81,7 @@ FINAL_PROMPT = f"""# Role
 - 对于宏观新闻，不再分析，stock_relations 直接返回空数组 []。
 - 对于非宏观新闻，按照以下顺序执行：
   - 提取出新闻中所有提及的公司名称、股票， 作为company_keywords: list[str]；
-  - 单次调用search_stock_code工具，获取股票信息列表，若返回空数组或返回未找到，则不再分析，stock_relations 直接返回空数组 []；
-  - 股票列表非空，则分析新闻于股票关联。
+  - 单次调用search_stock_code工具，获取股票信息列表，无论返回结果如何，不重复调用，若未匹配任何股票，则stock_relations 直接返回空数组 []。
 - StockRelation 中：code (股票代码：股票信息的code属性，如 600036.SH), relevance (关联度 0.0-1.0), sentiment (1: 积极, 0: 中性, -1: 负面), link_reason (关联依据/原文片段)。
 """
 
@@ -152,14 +142,25 @@ agent = create_agent(
     tools=[batch_search_stock_codes],
     system_prompt=FINAL_PROMPT,
     response_format=ToolStrategy(FinalOutput),
+    middleware=[
+        ToolCallLimitMiddleware(
+            tool_name="batch_search_stock_codes",
+            thread_limit=5,
+            run_limit=3,
+        )
+    ]
 )
 
 def evaluate_all():
-    all_news = pd.read_csv(SOURCE / "macro.csv", nrows=100).to_dict("records")
-    all_news.extend(pd.read_csv(SOURCE / "eastmoney.csv", nrows=100).to_dict("records"))
+    all_news = pd.read_csv(SOURCE / "macro.csv").to_dict("records")
+    all_news.extend(pd.read_csv(SOURCE / "eastmoney.csv").to_dict("records"))
     results = []
 
+    index = 1
+
     for news in all_news:
+        if not news["content"].__contains__("比亚迪"):
+            continue
         try:
             resp = agent.invoke(
                 {"messages": [{"role": "user", "content": f"新闻标题: {news['title']}\n新闻内容: {news['content']}"}]},
@@ -169,12 +170,24 @@ def evaluate_all():
         except Exception as e:
             print(e)
             results.append({"news_id": news["item_id"], "title": news.get("title"), "error": "调用错误"})
+        print(f"{index} 分析完毕：{news["title"]}")
+        index += 1
 
     df = pd.DataFrame(results)
     df_extracted = pd.DataFrame(df['extracted'].apply(lambda x: x if isinstance(x, dict) else {}).tolist())
     df_final = pd.concat([df[['news_id', 'title']].reset_index(drop=True),
                           df_extracted.reset_index(drop=True)], axis=1)
-    df_final.to_csv(SOURCE / 'all_out.csv', index=False, encoding='utf-8-sig')
+    target_path = SOURCE / 'all_out.csv'
+
+    if os.path.isfile(target_path):
+        df_old = pd.read_csv(target_path, encoding='utf-8-sig')
+
+        df_combined = pd.concat([df_old, df_final], ignore_index=True)
+        df_merged = df_combined.drop_duplicates(subset=['news_id'], keep='last')
+        df_merged.to_csv(target_path, index=False, encoding='utf-8-sig')
+    else:
+        df_final.to_csv(target_path, index=False, encoding='utf-8-sig')
+
     print(f"评估完成，共处理 {len(results)} 条新闻，结果已保存至 source/all_out.json")
 
 
