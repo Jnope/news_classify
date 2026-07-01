@@ -9,7 +9,7 @@ from src.utils.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
-_FP_SET_KEY = "news_fingerprints"
+_FP_SET_KEY = "NEWS:news_fingerprints"
 
 _RE_HTML = re.compile(r"<[^>]+>")
 _RE_WHITESPACE = re.compile(r"\s+")

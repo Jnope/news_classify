@@ -61,6 +61,24 @@ class Settings(BaseSettings):
     dedup_ttl_hours: int = 24
     dedup_hamming_threshold: int = 3
 
+    # Logging
+    log_level: str = "WARNING"
+    log_dir: str = "/var/log/.news/"
+
+# Kafka（空配置表示禁用流式消费）
+    kafka_bootstrap_servers: str = ""
+    kafka_topic: str = ""
+    kafka_group_id: str = "news-classify"
+    kafka_poll_timeout: float = 5.0
+    kafka_max_records: int = 500
+
+    # MySQL
+    mysql_host: str = "rm-uf6c66e2638x57rl83o.mysql.rds.aliyuncs.com"
+    mysql_port: int = 3306
+    mysql_user: str = "xh_yuq_sys"
+    mysql_password: str = "Hy2YvbEZxZw2AMQW"
+    mysql_db: str = "xh_out_db"
+
     # Constants
     macro_categories: list[str] = Field(default=[
         "货币政策与流动性",
