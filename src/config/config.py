@@ -69,8 +69,13 @@ class Settings(BaseSettings):
     kafka_bootstrap_servers: str = ""
     kafka_topic: str = ""
     kafka_group_id: str = "news-classify"
+    kafka_security_protocol: str = "SASL_SSL"
+    kafka_sasl_mechanism: str = "PLAIN"
+    kafka_sasl_username: str = ""
+    kafka_sasl_password: str = ""
     kafka_poll_timeout: float = 5.0
     kafka_max_records: int = 500
+    kafka_worker_count: int = 8
 
     # MySQL
     mysql_host: str = "rm-uf6c66e2638x57rl83o.mysql.rds.aliyuncs.com"

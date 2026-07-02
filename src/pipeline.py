@@ -1,6 +1,7 @@
 import logging
 import signal
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from src.config.config import settings
 from src.services.ai_analyzer import get_ai_analyzer
@@ -68,14 +69,15 @@ class NewsAnalysisPipeline:
         logger.info("处理完成: 共 %d 条, 去重跳过 %d 条, 分析 %d 条", total, skipped, processed)
         return results
 
-    def run_streaming(self):
+    def run_streaming(self, max_workers: int | None = None):
         if not kafka_consumer.enabled:
             logger.warning("Kafka 未配置，跳过流式消费")
             return
 
+        if max_workers is None:
+            max_workers = settings.kafka_worker_count
         self._running = True
-        idle_rounds = 0
-        logger.info("流式消费启动，等待 Kafka 消息...")
+        logger.info("流式消费启动，并发分析线程数: %d", max_workers)
 
         def _stop(signum, frame):
             logger.info("收到停止信号，准备退出...")
@@ -83,6 +85,31 @@ class NewsAnalysisPipeline:
 
         signal.signal(signal.SIGTERM, _stop)
         signal.signal(signal.SIGINT, _stop)
+
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+
+        def _process(news):
+            dedup_result = self._dedup.process_news(news.content)
+            if dedup_result["status"] == "skipped":
+                logger.info("跳过重复新闻: %s", news.title)
+                return
+
+            extracted = self._analyzer.analyze(news.title, news.content)
+            result = {
+                "news_id": news.item_id,
+                "title": news.title,
+                "source_type": news.source_type,
+                "model_version": settings.llm_model,
+            }
+            if extracted is not None:
+                result["extracted"] = extracted
+            else:
+                result["extracted"] = {
+                    "macro": {"is_macro": False, "macro_category": [], "sentiment": 0, "ai_summary": ""},
+                    "stock_relations": [],
+                }
+            self._store.save_one(result)
+            logger.info("分析完毕: %s", news.title)
 
         while self._running:
             try:
@@ -93,42 +120,13 @@ class NewsAnalysisPipeline:
                 continue
 
             if not batch:
-                if idle_rounds % 60 == 0:
-                    logger.debug("等待消息中... (缓冲池: %d 条)", self._store.buffered_count)
-                idle_rounds += 1
                 continue
 
-            idle_rounds = 0
-            logger.info("收到 %d 条 Kafka 消息", len(batch))
-
+            logger.info("收到 %d 条 Kafka 消息，提交分析...", len(batch))
             for news in batch:
-                dedup_result = self._dedup.process_news(news.content)
-                if dedup_result["status"] == "skipped":
-                    logger.info("跳过重复新闻: %s", news.title)
-                    continue
+                executor.submit(_process, news)
 
-                extracted = self._analyzer.analyze(news.title, news.content)
-                if extracted is not None:
-                    self._store.save_one({
-                        "news_id": news.item_id,
-                        "title": news.title,
-                        "source_type": news.source_type,
-                        "model_version": settings.llm_model,
-                        "extracted": extracted,
-                    })
-                else:
-                    self._store.save_one({
-                        "news_id": news.item_id,
-                        "title": news.title,
-                        "source_type": news.source_type,
-                        "model_version": settings.llm_model,
-                        "extracted": {
-                            "macro": {"is_macro": False, "macro_category": [], "sentiment": 0, "ai_summary": ""},
-                            "stock_relations": [],
-                        },
-                    })
-                logger.info("分析完毕: %s", news.title)
-
+        executor.shutdown(wait=True)
         self._store.flush()
         kafka_consumer.close()
         logger.info("流式消费已停止, 缓冲池已刷新")

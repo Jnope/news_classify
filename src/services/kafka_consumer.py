@@ -24,12 +24,16 @@ class KafkaNewsConsumer:
 
         self._consumer = KafkaConsumer(
             settings.kafka_topic,
-            bootstrap_servers=settings.kafka_bootstrap_servers,
+            bootstrap_servers=settings.kafka_bootstrap_servers.split(",") if "," in settings.kafka_bootstrap_servers else [settings.kafka_bootstrap_servers],
             group_id=settings.kafka_group_id,
             value_deserializer=lambda m: json.loads(m.decode("utf-8")),
             key_deserializer=lambda m: m.decode("utf-8") if m else None,
             auto_offset_reset="latest",
             enable_auto_commit=True,
+            security_protocol=settings.kafka_security_protocol,
+            sasl_mechanism=settings.kafka_sasl_mechanism,
+            sasl_plain_username=settings.kafka_sasl_username,
+            sasl_plain_password=settings.kafka_sasl_password,
         )
         logger.info(
             "Kafka 消费者初始化成功: %s / %s",
